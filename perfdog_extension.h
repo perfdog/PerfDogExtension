@@ -15,7 +15,7 @@
 
 namespace perfdog {
 
-#ifdef PERFDOG_EXTENSION_ENABLE
+#if defined(PERFDOG_EXTENSION_ENABLE) && (defined(__ANDROID__) || defined(__APPLE__))
 
 //总开关
 int EnableSendToPerfDog();

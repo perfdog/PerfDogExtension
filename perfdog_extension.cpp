@@ -1,7 +1,9 @@
 ﻿// Copyright 2022 Tencent Inc. All rights reserved.
 //
 // Author: PerfDog@tencent.com
-// Version: 1.0
+// Version: 1.1
+
+#if defined(__ANDROID__) || defined(__APPLE__)
 
 #include "perfdog_extension.h"
 
@@ -1015,3 +1017,4 @@ void addNote(const std::string& name) { GetPerfDogExtensionInstance().addNote(na
 }  // namespace perfdog
 
 #endif  // PERFDOG_EXTENSION_ENABLE
+#endif
