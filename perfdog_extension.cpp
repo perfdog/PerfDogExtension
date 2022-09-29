@@ -1,7 +1,7 @@
 ﻿// Copyright 2022 Tencent Inc. All rights reserved.
 //
 // Author: PerfDog@tencent.com
-// Version: 1.1
+// Version: 1.2
 
 #if defined(__ANDROID__) || defined(__APPLE__)
 
@@ -172,8 +172,8 @@ class Buffer {
 
  private:
   char* buf_;
-  int pos_;
   int capacity_;
+  int pos_;
   bool is_overflow_;
 };
 
@@ -722,12 +722,12 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     memset(&local_addr, 0, sizeof(local_addr));
     local_addr.sin_family = AF_INET;
     local_addr.sin_port = htons(53000);
-    if (bind(server_fd_.Get(), (sockaddr*)&local_addr, sizeof(local_addr)) == -1) {
+    if (::bind(server_fd_.Get(), (sockaddr*)&local_addr, sizeof(local_addr)) == -1) {
       PrintError("bind");
       return 1;
     }
 
-    if (listen(server_fd_.Get(), 1) == -1) {
+    if (::listen(server_fd_.Get(), 1) == -1) {
       PrintError("listen");
       return 1;
     }
@@ -751,7 +751,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     std::lock_guard<std::mutex> lock_guard(lock_);
 
     if (client_fd_.Get() != -1) {
-      int ret = send(client_fd_.Get(), buf, size, MSG_NOSIGNAL);
+      int ret = ::send(client_fd_.Get(), buf, size, MSG_NOSIGNAL);
       if (ret != size) ErrorLog("send error:size %d,ret %d", size, ret);
       return ret;
     } else {
@@ -773,7 +773,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
       return -1;
     } else if (ret > 0) {
       if (pfd.revents & POLLIN) {
-        int nread = read(fd, buf, count);
+        int nread = ::read(fd, buf, count);
         return nread > 0 ? nread : -1;
       } else {
         ErrorLog("fd error:%d", pfd.revents);
@@ -800,7 +800,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
         if (server_poll.revents & POLLIN) {
           sockaddr_in peer_addr;
           socklen_t peer_addr_size = sizeof(peer_addr);
-          int fd = accept(server_fd_.Get(), (sockaddr*)&peer_addr, &peer_addr_size);
+          int fd = ::accept(server_fd_.Get(), (sockaddr*)&peer_addr, &peer_addr_size);
 
           {
             std::lock_guard<std::mutex> lock_guard(lock_);
