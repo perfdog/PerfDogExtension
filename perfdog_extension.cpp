@@ -1,9 +1,9 @@
 ﻿// Copyright 2022 Tencent Inc. All rights reserved.
 //
 // Author: PerfDog@tencent.com
-// Version: 1.2
+// Version: 1.3
 
-#if defined(__ANDROID__) || defined(__APPLE__)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32)
 
 #include "perfdog_extension.h"
 
@@ -66,15 +66,15 @@ static constexpr int kMessageHeaderLength = sizeof(MessageHeader);
 
 enum MessageType : uint16_t {
   kInvalid = 0,
-  kStartTestReq,  //空
-  kStartTestRsp,  //空
-  kStopTestReq,   //空
-  kStopTestRsp,   //空
+  kStartTestReq,  // 空
+  kStartTestRsp,  // 空
+  kStopTestReq,   // 空
+  kStopTestRsp,   // 空
   kStringMap,
   kCustomFloatValue,
   kCustomIntegerValue,
   kCustomStringValue,
-  kCleanMap,  //空
+  kCleanMap,  // 空
   kSetLabelReq,
   kAddNoteReq,
 };
@@ -210,7 +210,7 @@ class StringMap : public Message {
   std::string name_;
 };
 
-//非英文字符需要UTF-8编码
+// 非英文字符需要UTF-8编码
 class StringOrId : public Message {
  public:
   static constexpr uint32_t kInvalidStringId = 0xffffffff;
@@ -422,7 +422,7 @@ class EmptyMessageWrapper : public Message {
 };
 
 //----------------------------------------------------------------
-//数据处理
+// 数据处理
 //----------------------------------------------------------------
 constexpr int kBlockSize = 4096;
 static_assert(kBlockSize >= kMaxMessageLength, "kBlockSize is less than kMaxMessageLength");
@@ -534,7 +534,7 @@ class PerfDogExtension {
   virtual void StopServer() = 0;
   virtual int SendData(const void* buf, int size) = 0;
   virtual void ErrorLog(const char* format, ...) = 0;
-  virtual uint64_t CurrentTime() = 0;  //毫秒
+  virtual uint64_t CurrentTime() = 0;  // 毫秒
 
  private:
   void StartTest() {
@@ -644,7 +644,7 @@ class PerfDogExtension {
   std::mutex lock_;
   std::atomic_bool stop_;
   std::atomic_bool start_test_;
-  std::forward_list<BlockPtr> block_list_;  //前插链表
+  std::forward_list<BlockPtr> block_list_;  // 前插链表
   std::mutex buffer_lock_;
   std::unordered_map<std::string, uint32_t> string_id_map_;
   std::mutex string_id_map_lock_;
@@ -653,46 +653,61 @@ class PerfDogExtension {
 }  // namespace perfdog
 
 //----------------------------------------------------------------
-//网络收发
+// 网络收发
 //----------------------------------------------------------------
+#if defined(__ANDROID__) || defined(__APPLE__)
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#define SOCKET_SEND_FLAG MSG_NOSIGNAL
+#elif defined(_WIN32)
+#include <windows.h>
+#include <winsock2.h>
+#define SOCKET_SEND_FLAG 0
+#define socklen_t int
+#endif
 
 namespace perfdog {
-class ScopeFile {
+template <typename T, int (*CloseFunction)(T), T InvalidValue>
+class ScopedResource {
  public:
-  explicit ScopeFile(int fd = -1) : fd_(fd) {}
-  ScopeFile(ScopeFile& other) = delete;
-  ScopeFile& operator=(ScopeFile& other) = delete;
-  ScopeFile(ScopeFile&& other) noexcept {
+  explicit ScopedResource(T fd = InvalidValue) : fd_(fd) {}
+  ScopedResource(ScopedResource& other) = delete;
+  ScopedResource& operator=(ScopedResource& other) = delete;
+  ScopedResource(ScopedResource&& other) noexcept {
     fd_ = other.fd_;
-    other.fd_ = -1;
+    other.fd_ = InvalidValue;
   }
 
-  ScopeFile& operator=(ScopeFile&& other) noexcept {
+  ScopedResource& operator=(ScopedResource&& other) noexcept {
     release();
     fd_ = other.fd_;
-    other.fd_ = -1;
+    other.fd_ = InvalidValue;
 
     return *this;
   }
 
-  int Get() const { return fd_; }
+  T Get() const { return fd_; }
 
-  virtual ~ScopeFile() { release(); }
+  virtual ~ScopedResource() { release(); }
 
  private:
   void release() {
-    if (fd_ != -1) {
-      close(fd_);
+    if (fd_ != InvalidValue) {
+      CloseFunction(fd_);
     }
-    fd_ = -1;
+    fd_ = InvalidValue;
   }
 
-  int fd_;
+  T fd_;
 };
+
+#if defined(__ANDROID__) || defined(__APPLE__)
+using ScopeFile = ScopedResource<int, close, -1>;
+#elif defined(_WIN32)
+using ScopeFile = ScopedResource<SOCKET, closesocket, INVALID_SOCKET>;
+#endif
 
 class PerfDogExtensionPosix : public PerfDogExtension {
  public:
@@ -706,14 +721,14 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
     if (server_) return 0;
 
-    server_fd_ = ScopeFile(socket(AF_INET, SOCK_STREAM, 0));
+    server_fd_ = ScopeFile(::socket(AF_INET, SOCK_STREAM, 0));
     if (server_fd_.Get() == -1) {
       PrintError("socket");
       return 1;
     }
 
     int opt = 1;
-    if (setsockopt(server_fd_.Get(), SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+    if (::setsockopt(server_fd_.Get(), SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt)) < 0) {
       PrintError("setsockopt");
       return 1;
     }
@@ -751,7 +766,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     std::lock_guard<std::mutex> lock_guard(lock_);
 
     if (client_fd_.Get() != -1) {
-      int ret = ::send(client_fd_.Get(), buf, size, MSG_NOSIGNAL);
+      int ret = ::send(client_fd_.Get(), (const char*)buf, size, SOCKET_SEND_FLAG);
       if (ret != size) ErrorLog("send error:size %d,ret %d", size, ret);
       return ret;
     } else {
@@ -759,64 +774,62 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     }
   }
 
-  void PrintError(const char* prefix) { ErrorLog("%s:%s", prefix, strerror(errno)); }
+  virtual void PrintError(const char* prefix) { ErrorLog("%s:%s", prefix, strerror(errno)); }
 
   // 0:timeout -1:错误或者EOF >0:实际读到的数据
-  int ReadWithTimeout(int fd, int timeout_ms, char* buf, int count) {
-    pollfd pfd;
-    pfd.fd = fd;
-    pfd.events = POLLIN;
+  int ReadWithTimeout(const ScopeFile& fd, int timeout_ms, char* buf, int count) {
+    fd_set rfds;
+    timeval tv;
 
-    int ret = poll(&pfd, 1, timeout_ms);
+    FD_ZERO(&rfds);
+    FD_SET(fd.Get(), &rfds);
+
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = timeout_ms % 1000 * 1000;
+
+    int ret = ::select(fd.Get() + 1, &rfds, NULL, NULL, &tv);
     if (ret == -1) {
-      PrintError("poll");
+      PrintError("select");
       return -1;
-    } else if (ret > 0) {
-      if (pfd.revents & POLLIN) {
-        int nread = ::read(fd, buf, count);
-        return nread > 0 ? nread : -1;
-      } else {
-        ErrorLog("fd error:%d", pfd.revents);
-        return -1;
-      }
-    }
-
-    return 0;
+    } else if (ret) {
+      int nread = ::recv(fd.Get(), buf, count, 0);
+      return nread > 0 ? nread : -1;
+    } else
+      return 0;
   }
 
   void ProcessClientMessage() {
-    pollfd server_poll;
-    server_poll.fd = server_fd_.Get();
-    server_poll.events = POLLIN;
-
     while (!stop_) {
-      int ret = poll(&server_poll, 1, 100);
+      fd_set rfds;
+      timeval tv;
+
+      FD_ZERO(&rfds);
+      FD_SET(server_fd_.Get(), &rfds);
+      tv.tv_sec = 0;
+      tv.tv_usec = 100 * 1000;
+
+      int ret = ::select(server_fd_.Get() + 1, &rfds, NULL, NULL, &tv);
       if (ret == -1) {
-        PrintError("poll");
+        PrintError("select");
         return;
       }
 
       if (ret > 0) {
-        if (server_poll.revents & POLLIN) {
-          sockaddr_in peer_addr;
-          socklen_t peer_addr_size = sizeof(peer_addr);
-          int fd = ::accept(server_fd_.Get(), (sockaddr*)&peer_addr, &peer_addr_size);
+        sockaddr_in peer_addr;
+        socklen_t peer_addr_size = sizeof(peer_addr);
+        ScopeFile fd(::accept(server_fd_.Get(), (sockaddr*)&peer_addr, &peer_addr_size));
 
-          {
-            std::lock_guard<std::mutex> lock_guard(lock_);
-            client_fd_ = ScopeFile(fd);
-          }
-          OnConnect();
-          ReadData(client_fd_);
-          {
-            std::lock_guard<std::mutex> lock_guard(lock_);
-            client_fd_ = ScopeFile();
-          }
-          OnDisconnect();
-        } else {
-          ErrorLog("server fd error:%d", ret);
-          return;
+        {
+          std::lock_guard<std::mutex> lock_guard(lock_);
+          client_fd_ = std::move(fd);
         }
+        OnConnect();
+        ReadData(client_fd_);
+        {
+          std::lock_guard<std::mutex> lock_guard(lock_);
+          client_fd_ = ScopeFile();
+        }
+        OnDisconnect();
       }
     }
   }
@@ -826,13 +839,13 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     char temp[4096];
 
     while (!stop_) {
-      int ret = ReadWithTimeout(fd.Get(), 100, temp, sizeof(temp));
+      int ret = ReadWithTimeout(fd, 100, temp, sizeof(temp));
       if (ret == -1) return;
 
       if (ret > 0) {
         data.append(temp, ret);
 
-        //解析数据
+        // 解析数据
         Buffer buffer(&data[0], data.size());
         while (buffer.Remaining() >= kMessageHeaderLength) {
           Buffer slice = buffer.Slice();
@@ -844,7 +857,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
           }
         }
 
-        //清除已读的数据
+        // 清除已读的数据
         if (buffer.DataSize() > 0) data.erase(0, buffer.DataSize());
       }
     }
@@ -863,7 +876,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
       return -1;
     }
 
-    //解析数据
+    // 解析数据
     if (header.length == 0) {
       OnMessage(header.type, nullptr);
     } else {
@@ -908,7 +921,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 }  // namespace perfdog
 
 //----------------------------------------------------------------
-//各个平台的实现
+// 各个平台的实现
 //----------------------------------------------------------------
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -981,8 +994,69 @@ static PerfDogExtension& GetPerfDogExtensionInstance() {
 }  // namespace perfdog
 #endif
 
+#ifdef _WIN32
+
+namespace perfdog {
+class PerfDogExtensionWindow : public PerfDogExtensionPosix {
+ public:
+  PerfDogExtensionWindow() {
+    WSADATA wsa_data;
+
+    int ret = WSAStartup(MAKEWORD(2, 2), &wsa_data);
+    if (ret != 0) {
+      PrintError("WSAStartup");
+    }
+
+    QueryPerformanceFrequency(&time_freq_);
+  }
+
+ protected:
+  uint64_t CurrentTime() override {
+    LARGE_INTEGER time;
+
+    QueryPerformanceCounter(&time);
+    return time.QuadPart * 1000 / time_freq_.QuadPart;
+  }
+
+  void ErrorLog(const char* format, ...) override {
+    char output[256];
+    va_list vargs;
+    va_start(vargs, format);
+    vsnprintf(output, sizeof(output), format, vargs);
+    puts(output);
+    OutputDebugStringA(output);
+    va_end(vargs);
+  }
+
+  void PrintError(const char* prefix) override {
+    char* buf = NULL;
+    const char* errmsg;
+
+    FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL,
+                   WSAGetLastError(), 0, (LPSTR)&buf, 0, NULL);
+
+    if (buf)
+      errmsg = buf;
+    else
+      errmsg = "Unknown error";
+
+    ErrorLog("%s:%s", prefix, errmsg);
+    if (buf) LocalFree(buf);
+  }
+
+ private:
+  LARGE_INTEGER time_freq_;
+};
+
+static PerfDogExtension& GetPerfDogExtensionInstance() {
+  static PerfDogExtensionWindow instance;
+  return instance;
+}
+}  // namespace perfdog
+#endif
+
 //----------------------------------------------------------------
-//外部接口
+// 外部接口
 //----------------------------------------------------------------
 namespace perfdog {
 int EnableSendToPerfDog() { return GetPerfDogExtensionInstance().Init(); }

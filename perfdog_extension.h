@@ -1,7 +1,7 @@
 ﻿// Copyright 2022 Tencent Inc. All rights reserved.
 //
 // Author: PerfDog@tencent.com
-// Version: 1.0
+// Version: 1.3
 
 #ifndef PERFDOG_EXTENSION_H_
 #define PERFDOG_EXTENSION_H_
@@ -15,7 +15,7 @@
 
 namespace perfdog {
 
-#if defined(PERFDOG_EXTENSION_ENABLE) && (defined(__ANDROID__) || defined(__APPLE__))
+#if defined(PERFDOG_EXTENSION_ENABLE) && (defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32))
 
 //总开关
 int EnableSendToPerfDog();
