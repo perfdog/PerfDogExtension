@@ -22,6 +22,32 @@
 namespace perfdog {
 
 /**
+* Protocol
+* [Header][ [MessageHeader][Message] ... [MessageHeader][Message] ]
+* Workflow:
+* Client                          PerfDogExtension
+*                                  bind
+*                                  listen
+* connect                  -->
+*                                  accept
+*                          <--     Header
+* MessageHeader            -->
+* StartTestReq             -->
+*                          <--     MessageHeader
+*                          <--     StartTestRsp
+*                          <--     MessageHeader
+*                          <--     StringMap
+*                          <--     MessageHeader
+*                          <--     CustomIntegerValue
+*                          ...
+* MessageHeader            -->
+* StopTestReq              -->
+*                          <--     MessageHeader
+*                          <--     StopTestRsp
+*
+* note:StopTestReq may not be sent, directly received EOF
+*/
+/**
  * 协议
  * [Header][ [MessageHeader][Message] ... [MessageHeader][Message] ]
  * 流程:
@@ -58,7 +84,10 @@ struct Header {
 static constexpr int kMaxMessageLength = 4096;
 
 struct MessageHeader {
-  uint16_t length;  // 0表示Message是空的,不为0后面的length个字节是Message的内容
+  // 0 means the message is empty, if not, the next 'length' bytes are the content of the message.
+  // 0表示Message是空的,不为0后面的length个字节是Message的内容
+  uint16_t length;
+
   uint16_t type;
 };
 
@@ -66,15 +95,15 @@ static constexpr int kMessageHeaderLength = sizeof(MessageHeader);
 
 enum MessageType : uint16_t {
   kInvalid = 0,
-  kStartTestReq,  // 空
-  kStartTestRsp,  // 空
-  kStopTestReq,   // 空
-  kStopTestRsp,   // 空
+  kStartTestReq,  // 空 empty
+  kStartTestRsp,  // 空 empty
+  kStopTestReq,   // 空 empty
+  kStopTestRsp,   // 空 empty
   kStringMap,
   kCustomFloatValue,
   kCustomIntegerValue,
   kCustomStringValue,
-  kCleanMap,  // 空
+  kCleanMap,  // 空 empty
   kSetLabelReq,
   kAddNoteReq,
 };
@@ -210,6 +239,7 @@ class StringMap : public Message {
   std::string name_;
 };
 
+// Non-English characters require UTF-8 encoding
 // 非英文字符需要UTF-8编码
 class StringOrId : public Message {
  public:
@@ -422,6 +452,7 @@ class EmptyMessageWrapper : public Message {
 };
 
 //----------------------------------------------------------------
+// Data processing
 // 数据处理
 //----------------------------------------------------------------
 constexpr int kBlockSize = 4096;
@@ -534,7 +565,7 @@ class PerfDogExtension {
   virtual void StopServer() = 0;
   virtual int SendData(const void* buf, int size) = 0;
   virtual void ErrorLog(const char* format, ...) = 0;
-  virtual uint64_t CurrentTime() = 0;  // 毫秒
+  virtual uint64_t CurrentTime() = 0;  // 毫秒 ms
 
  private:
   void StartTest() {
@@ -644,7 +675,7 @@ class PerfDogExtension {
   std::mutex lock_;
   std::atomic_bool stop_;
   std::atomic_bool start_test_;
-  std::forward_list<BlockPtr> block_list_;  // 前插链表
+  std::forward_list<BlockPtr> block_list_;  // 前插链表 prependant linked list
   std::mutex buffer_lock_;
   std::unordered_map<std::string, uint32_t> string_id_map_;
   std::mutex string_id_map_lock_;
@@ -653,6 +684,7 @@ class PerfDogExtension {
 }  // namespace perfdog
 
 //----------------------------------------------------------------
+// network transmission and reception
 // 网络收发
 //----------------------------------------------------------------
 #if defined(__ANDROID__) || defined(__APPLE__)
@@ -776,6 +808,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
   virtual void PrintError(const char* prefix) { ErrorLog("%s:%s", prefix, strerror(errno)); }
 
+  // 0:timeout -1:error or EOF >0:Actual readings
   // 0:timeout -1:错误或者EOF >0:实际读到的数据
   int ReadWithTimeout(const ScopeFile& fd, int timeout_ms, char* buf, int count) {
     fd_set rfds;
@@ -845,6 +878,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
       if (ret > 0) {
         data.append(temp, ret);
 
+        // parse data
         // 解析数据
         Buffer buffer(&data[0], data.size());
         while (buffer.Remaining() >= kMessageHeaderLength) {
@@ -857,12 +891,14 @@ class PerfDogExtensionPosix : public PerfDogExtension {
           }
         }
 
+        // Clear read data
         // 清除已读的数据
         if (buffer.DataSize() > 0) data.erase(0, buffer.DataSize());
       }
     }
   }
 
+  //-1:error 0:data not complete 1:successfully parsing
   //-1:error 0:数据还没收全 1:解析成功
   int parseMessage(Buffer& buffer) {
     MessageHeader header;
@@ -876,6 +912,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
       return -1;
     }
 
+    // parse data
     // 解析数据
     if (header.length == 0) {
       OnMessage(header.type, nullptr);
@@ -921,6 +958,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 }  // namespace perfdog
 
 //----------------------------------------------------------------
+// Realization of each platform
 // 各个平台的实现
 //----------------------------------------------------------------
 #ifdef __ANDROID__
@@ -1056,6 +1094,7 @@ static PerfDogExtension& GetPerfDogExtensionInstance() {
 #endif
 
 //----------------------------------------------------------------
+// External interface
 // 外部接口
 //----------------------------------------------------------------
 namespace perfdog {
