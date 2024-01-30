@@ -1,92 +1,95 @@
-# PerfDog自定义数据拓展说明
+# Language
+- [English](README.md)
+- [中文](README_zh.md)
 
-为了更方便且准确地测试及分析性能问题，目前支持将自定义的性能相关数据实时同步到PerfDog，同样也支持数据展示、存储及对比等功能。例如可以在代码中添加标签及批注，而不用人为的判断，更加准确且方便。也可以将一些更加细分的数据，例如顶点或纹理内存占用、DrawCall、Triangle、网络情况等，同步到PerfDog，便于深入分析。甚至可以将一些逻辑数据，比如场景、坐标、朝向、怪物或角色的数量、粒子特效等等，便于重现场景进而深入分析。
+# PerfDog Custom Data Extension Description
 
-## 支持的平台
+In order to test and analyze performance problems more conveniently and accurately, PerfDog supports real-time synchronization of customized performance-related data to PerfDog, as well as data display, storage and comparison functions. For example, you can add tags and annotations to the code without human judgment, which is more accurate and convenient. You can also synchronize some more detailed data, such as vertex or texture memory usage, DrawCall, Triangle, network conditions, etc., to PerfDog for in-depth analysis. You can even synchronize some logical data, such as scene, coordinates, orientation, number of monsters or characters, particle effects, etc., to facilitate the reproduction of the scene for in-depth analysis.
+
+## Supported platforms
 - Android
 - iOS
 - Windows
 
-## 接入PerfDogExtension
+## Access to PerfDogExtension
 
-### 1. 集成PerfDog提供的源文件
+### 1. Integration of source files provided by PerfDog
 
-PerfDog会提供两个源文件,分别是perfdog_extension.h和perfdog_extension.cpp.使用者需要把他们放进工程里.文件可以从https://github.com/perfdog/PerfDogExtension 上下载
+PerfDog will provide two source files, perfdog_extension.h and perfdog_extension.cpp. Users need to put them into the project. The files can be downloaded from https://github.com/perfdog/PerfDogExtension
 
-### 2. 启动PerfDog自定义数据拓展
+### 2. Launch PerfDog Custom Data Extension
 
 ```
 int EnableSendToPerfDog()
 ```
 
-游戏启动后调用这个接口启动PerfDog自定义数据拓展.这个接口会创建一个socket并监听53000端口
+This interface is called after the game has started to initiate PerfDog's custom data extension. This interface creates a socket and listens on port 53000.
 
-### 3. 发送自定义数据
+### 3. Send customized data
 
-- 浮点数(支持一个key对应1到3个value)
+- Floating point numbers (supports 1 to 3 values for a key)
 ```
 void PostValueF(const std::string& category, const std::string& key, float a);
 void PostValueF(const std::string& category, const std::string& key, float a, float b);
 void PostValueF(const std::string& category, const std::string& key, float a, float b, float c);
 ```
 
-- 整数(支持一个key对应1到3个value)
+- Integer (supports 1 to 3 values for a key)
 ```
 void PostValueI(const std::string& category, const std::string& key, int a);
 void PostValueI(const std::string& category, const std::string& key, int a, int b);
 void PostValueI(const std::string& category, const std::string& key, int a, int b, int c);
 ```
 
-- 字符串(支持一个key对应1到1个value)
+- String (supports 1 values for a key)
 ```
-void PostValueS(const std::string& category, const std::string& key, const std::string& value);
+void PostValueS(const std::string& category, const std::string& key, const std::string& value);;
 ```
 
-- 设置场景Label标签
-
+- Set the scene Label
 ```
-//标记进入一个新场景,这个场景会持续到下次setLabel
+// Marks the entry of a new scene, which lasts until the next setLabel.
 void setLabel(const std::string& name);
 ```
 
-等效于红框内的按钮
+Equivalent to the button in the red box
 
-![](https://github.com/perfdog/PerfDogExtension/raw/master/img/img1.png)
+![](https://github.com/perfdog/PerfDogExtension/raw/master/img/img1_en.png)
 
-- 添加批注
+- Add annotations
 
 ```
-//对当前时刻进行批注及标定
+// Annotate and calibrate the current moment
 void addNote(const std::string& name);
 ```
 
-等效于图表上左键双击
+Equivalent to a left double-click on a chart
 
-![](https://github.com/perfdog/PerfDogExtension/raw/master/img/img2.png)
+![](https://github.com/perfdog/PerfDogExtension/raw/master/img/img2_en.png)
 
-note:客户端收到数据后会将所有category相同的数据放到一个表里,标题为category,线条的名字为key.如果value有多个,线条的名字为key_a,key_b,key_c
+note: when the client receives the data, it will put all the data with the same category into a table, the title is category, and the name of the line is key. if the value has more than one, the name of the line is key_a, key_b, key_c.
 
-## 禁用PerfDogExtension
+## Disable PerfDogExtension
 
-在perfdog_extension.h里注释下图框里的代码
+Comment out the code in the box below in perfdog_extension.h
 
-## 已知问题
+## Known issues
 
-在mac上ios手机在wifi模式下无法获取自定义数据
+Can't get custom data from ios phone on mac in wifi mode
 
-## 性能测试
+## Performance test
 
-测试环境:pixel3,小核锁定1766MHz,测试程序绑定在小核上
+Test environment: pixel3, small core locked at 1766MHz, test program bound to small core.
 
-测试结果:在每秒调用2w次PostValueI的情况下cpu占用为1%~2%
+Test result: cpu usage is 1%~2% under the case of calling PostValueI 2w times per second.
 
-## 错误排查
+## Troubleshooting
 
 - Android
 
-用adb logcat查看手机日志,搜索PerfDogExtension.例如端口被占用的错误日志
+Use adb logcat to check cell phone logs, search for PerfDogExtension. e.g. port occupied error logs.
 2022-07-27 17:15:29.495 8680-8682/? E/PerfDogExtension: bind:Address already in use
 
 - IOS
 
-在mac上用控制台查看手机日志,搜索PerfDogExtension
+Checking phone logs on mac using console, searching for PerfDogExtension
