@@ -3,7 +3,7 @@
 // Author: PerfDog@tencent.com
 // Version: 1.3
 
-#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32) || defined(_GAMING_XBOX)
 
 #include "perfdog_extension.h"
 
@@ -22,31 +22,31 @@
 namespace perfdog {
 
 /**
-* Protocol
-* [Header][ [MessageHeader][Message] ... [MessageHeader][Message] ]
-* Workflow:
-* Client                          PerfDogExtension
-*                                  bind
-*                                  listen
-* connect                  -->
-*                                  accept
-*                          <--     Header
-* MessageHeader            -->
-* StartTestReq             -->
-*                          <--     MessageHeader
-*                          <--     StartTestRsp
-*                          <--     MessageHeader
-*                          <--     StringMap
-*                          <--     MessageHeader
-*                          <--     CustomIntegerValue
-*                          ...
-* MessageHeader            -->
-* StopTestReq              -->
-*                          <--     MessageHeader
-*                          <--     StopTestRsp
-*
-* note:StopTestReq may not be sent, directly received EOF
-*/
+ * Protocol
+ * [Header][ [MessageHeader][Message] ... [MessageHeader][Message] ]
+ * Workflow:
+ * Client                          PerfDogExtension
+ *                                  bind
+ *                                  listen
+ * connect                  -->
+ *                                  accept
+ *                          <--     Header
+ * MessageHeader            -->
+ * StartTestReq             -->
+ *                          <--     MessageHeader
+ *                          <--     StartTestRsp
+ *                          <--     MessageHeader
+ *                          <--     StringMap
+ *                          <--     MessageHeader
+ *                          <--     CustomIntegerValue
+ *                          ...
+ * MessageHeader            -->
+ * StopTestReq              -->
+ *                          <--     MessageHeader
+ *                          <--     StopTestRsp
+ *
+ * note:StopTestReq may not be sent, directly received EOF
+ */
 /**
  * 协议
  * [Header][ [MessageHeader][Message] ... [MessageHeader][Message] ]
@@ -692,12 +692,16 @@ class PerfDogExtension {
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#define SOCKET_SEND_FLAG MSG_NOSIGNAL
 #elif defined(_WIN32)
 #include <windows.h>
 #include <winsock2.h>
-#define SOCKET_SEND_FLAG 0
 #define socklen_t int
+#endif
+
+#if defined(__ANDROID__)
+#define SOCKET_SEND_FLAG MSG_NOSIGNAL
+#else
+#define SOCKET_SEND_FLAG 0
 #endif
 
 namespace perfdog {
@@ -741,6 +745,13 @@ using ScopeFile = ScopedResource<int, close, -1>;
 using ScopeFile = ScopedResource<SOCKET, closesocket, INVALID_SOCKET>;
 #endif
 
+#ifdef _GAMING_XBOX
+#define SOCKET_PORT 43000
+#else
+#define SOCKET_PORT 53000
+#endif
+
+
 class PerfDogExtensionPosix : public PerfDogExtension {
  public:
   PerfDogExtensionPosix() : server_fd_(-1), stop_(false) {}
@@ -765,10 +776,17 @@ class PerfDogExtensionPosix : public PerfDogExtension {
       return 1;
     }
 
+#if defined(SO_NOSIGPIPE)
+    {
+      int on = 1;
+      ::setsockopt(server_fd_.Get(), SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+    }
+#endif
+
     sockaddr_in local_addr;
     memset(&local_addr, 0, sizeof(local_addr));
     local_addr.sin_family = AF_INET;
-    local_addr.sin_port = htons(53000);
+    local_addr.sin_port = htons(SOCKET_PORT);
     if (::bind(server_fd_.Get(), (sockaddr*)&local_addr, sizeof(local_addr)) == -1) {
       PrintError("bind");
       return 1;
@@ -1032,7 +1050,7 @@ static PerfDogExtension& GetPerfDogExtensionInstance() {
 }  // namespace perfdog
 #endif
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(_GAMING_XBOX)
 
 namespace perfdog {
 class PerfDogExtensionWindow : public PerfDogExtensionPosix {

@@ -10,12 +10,16 @@ In order to test and analyze performance problems more conveniently and accurate
 - Android
 - iOS
 - Windows
+- PlayStation
+- Xbox
 
 ## Access to PerfDogExtension
 
 ### 1. Integration of source files provided by PerfDog
 
 PerfDog will provide two source files, perfdog_extension.h and perfdog_extension.cpp. Users need to put them into the project. The files can be downloaded from https://github.com/perfdog/PerfDogExtension
+- PlayStation custom data extension requires additional source files to be integrated. Please obtain them on the official website or by contacting the sales manager.
+- Xbox platform requires additional firewall configuration to open host ports
 
 ### 2. Launch PerfDog Custom Data Extension
 

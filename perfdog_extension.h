@@ -16,7 +16,7 @@
 
 namespace perfdog {
 
-#if defined(PERFDOG_EXTENSION_ENABLE) && (defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32))
+#if defined(PERFDOG_EXTENSION_ENABLE) && (defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32) || defined(_GAMING_XBOX) || defined(__PROSPERO__))
 
 //Main switch
 //总开关

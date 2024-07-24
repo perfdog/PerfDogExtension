@@ -10,12 +10,16 @@
 - Android
 - iOS
 - Windows
+- PlayStation
+- Xbox
 
 ## 接入PerfDogExtension
 
 ### 1. 集成PerfDog提供的源文件
 
 PerfDog会提供两个源文件,分别是perfdog_extension.h和perfdog_extension.cpp.使用者需要把他们放进工程里.文件可以从https://github.com/perfdog/PerfDogExtension 上下载
+- PlayStation自定义拓展功能需要额外源文件集成，请在官网或者通过对接销售经理获取
+- Xbox平台需要额外配置防火墙打开主机端口
 
 ### 2. 启动PerfDog自定义数据拓展
 
