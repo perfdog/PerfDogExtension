@@ -693,8 +693,8 @@ class PerfDogExtension {
 #include <sys/socket.h>
 #include <unistd.h>
 #elif defined(_WIN32)
-#include <windows.h>
 #include <winsock2.h>
+#include <windows.h>
 #define socklen_t int
 #endif
 
