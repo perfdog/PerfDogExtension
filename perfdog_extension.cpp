@@ -578,6 +578,7 @@ class PerfDogExtension {
       writer_ = std::unique_ptr<std::thread>(new std::thread(&PerfDogExtension::DrainBuffer, this));
     }
     WriteMessage(EmptyMessageWrapper(kStartTestRsp));
+    ErrorLog("start test");
   }
 
   void StopTest() {
@@ -589,6 +590,7 @@ class PerfDogExtension {
       writer_->join();
       writer_ = nullptr;
       ClearData();
+      ErrorLog("stop test");
     }
     WriteMessage(EmptyMessageWrapper(kStopTestRsp));
   }
@@ -704,6 +706,14 @@ class PerfDogExtension {
 #define SOCKET_SEND_FLAG 0
 #endif
 
+#if defined(__ANDROID__) || defined(__APPLE__)
+#define CAUSE_BY_SIGNAL() (errno == EINTR)
+#else
+#define CAUSE_BY_SIGNAL() (false)
+#endif
+
+#define PRINT_ERROR(prefix) PrintError(__FILE__, __LINE__, prefix)
+
 namespace perfdog {
 template <typename T, int (*CloseFunction)(T), T InvalidValue>
 class ScopedResource {
@@ -751,7 +761,6 @@ using ScopeFile = ScopedResource<SOCKET, closesocket, INVALID_SOCKET>;
 #define SOCKET_PORT 53000
 #endif
 
-
 class PerfDogExtensionPosix : public PerfDogExtension {
  public:
   PerfDogExtensionPosix() : server_fd_(-1), stop_(false) {}
@@ -766,13 +775,13 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
     server_fd_ = ScopeFile(::socket(AF_INET, SOCK_STREAM, 0));
     if (server_fd_.Get() == -1) {
-      PrintError("socket");
+      PRINT_ERROR("socket");
       return 1;
     }
 
     int opt = 1;
     if (::setsockopt(server_fd_.Get(), SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt)) < 0) {
-      PrintError("setsockopt");
+      PRINT_ERROR("setsockopt");
       return 1;
     }
 
@@ -788,12 +797,12 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     local_addr.sin_family = AF_INET;
     local_addr.sin_port = htons(SOCKET_PORT);
     if (::bind(server_fd_.Get(), (sockaddr*)&local_addr, sizeof(local_addr)) == -1) {
-      PrintError("bind");
+      PRINT_ERROR("bind");
       return 1;
     }
 
     if (::listen(server_fd_.Get(), 1) == -1) {
-      PrintError("listen");
+      PRINT_ERROR("listen");
       return 1;
     }
 
@@ -816,7 +825,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     std::lock_guard<std::mutex> lock_guard(lock_);
 
     if (client_fd_.Get() != -1) {
-      int ret = ::send(client_fd_.Get(), (const char*)buf, size, SOCKET_SEND_FLAG);
+      int ret = CallSend(client_fd_.Get(), (const char*)buf, size, SOCKET_SEND_FLAG);
       if (ret != size) ErrorLog("send error:size %d,ret %d", size, ret);
       return ret;
     } else {
@@ -824,7 +833,51 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     }
   }
 
-  virtual void PrintError(const char* prefix) { ErrorLog("%s:%s", prefix, strerror(errno)); }
+  virtual void PrintError(const char* file, int line, const char* prefix) {
+    ErrorLog("%s:%d %s:%s", file, line, prefix, strerror(errno));
+  }
+
+  int CallRecv(int fd, char* buf, size_t n, int flags) {
+    while (true) {
+      int ret = ::recv(fd, buf, n, flags);
+      if (ret == -1) {
+        if (CAUSE_BY_SIGNAL()) {
+          continue;
+        }
+        PRINT_ERROR("recv");
+      }
+
+      return ret;
+    }
+  }
+
+  int CallSend(int fd, const char* buf, size_t n, int flags) {
+    while (true) {
+      int ret = ::send(fd, buf, n, flags);
+      if (ret == -1) {
+        if (CAUSE_BY_SIGNAL()) {
+          continue;
+        }
+        PRINT_ERROR("send");
+      }
+
+      return ret;
+    }
+  }
+
+  int CallAccept(int fd, struct sockaddr* addr, socklen_t* addr_length) {
+    while (true) {
+      int ret = ::accept(fd, addr, addr_length);
+      if (ret == -1) {
+        if (CAUSE_BY_SIGNAL()) {
+          continue;
+        }
+        PRINT_ERROR("accept");
+      }
+
+      return ret;
+    }
+  }
 
   // 0:timeout -1:error or EOF >0:Actual readings
   // 0:timeout -1:错误或者EOF >0:实际读到的数据
@@ -840,10 +893,13 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
     int ret = ::select(fd.Get() + 1, &rfds, NULL, NULL, &tv);
     if (ret == -1) {
-      PrintError("select");
+      if (CAUSE_BY_SIGNAL()) {
+        return 0;
+      }
+      PRINT_ERROR("select");
       return -1;
     } else if (ret) {
-      int nread = ::recv(fd.Get(), buf, count, 0);
+      int nread = CallRecv(fd.Get(), buf, count, 0);
       return nread > 0 ? nread : -1;
     } else
       return 0;
@@ -861,23 +917,28 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
       int ret = ::select(server_fd_.Get() + 1, &rfds, NULL, NULL, &tv);
       if (ret == -1) {
-        PrintError("select");
+        if (CAUSE_BY_SIGNAL()) {
+          continue;
+        }
+        PRINT_ERROR("select");
         return;
       }
 
       if (ret > 0) {
         sockaddr_in peer_addr;
         socklen_t peer_addr_size = sizeof(peer_addr);
-        ScopeFile fd(::accept(server_fd_.Get(), (sockaddr*)&peer_addr, &peer_addr_size));
+        ScopeFile fd(CallAccept(server_fd_.Get(), (sockaddr*)&peer_addr, &peer_addr_size));
 
         {
           std::lock_guard<std::mutex> lock_guard(lock_);
           client_fd_ = std::move(fd);
+          ErrorLog("client connected");
         }
         OnConnect();
         ReadData(client_fd_);
         {
           std::lock_guard<std::mutex> lock_guard(lock_);
+          ErrorLog("client disconnect");
           client_fd_ = ScopeFile();
         }
         OnDisconnect();
@@ -1060,7 +1121,7 @@ class PerfDogExtensionWindow : public PerfDogExtensionPosix {
 
     int ret = WSAStartup(MAKEWORD(2, 2), &wsa_data);
     if (ret != 0) {
-      PrintError("WSAStartup");
+      PRINT_ERROR("WSAStartup");
     }
 
     QueryPerformanceFrequency(&time_freq_);
@@ -1084,7 +1145,7 @@ class PerfDogExtensionWindow : public PerfDogExtensionPosix {
     va_end(vargs);
   }
 
-  void PrintError(const char* prefix) override {
+  void PrintError(const char* file, int line, const char* prefix) override {
     char* buf = NULL;
     const char* errmsg;
 
@@ -1096,7 +1157,7 @@ class PerfDogExtensionWindow : public PerfDogExtensionPosix {
     else
       errmsg = "Unknown error";
 
-    ErrorLog("%s:%s", prefix, errmsg);
+    ErrorLog("%s:%d %s:%s", file, line, prefix, errmsg);
     if (buf) LocalFree(buf);
   }
 
