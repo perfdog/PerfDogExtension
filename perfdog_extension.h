@@ -38,6 +38,23 @@ void setLabel(const std::string& name);
 //对当前时刻进行批注及标定
 void addNote(const std::string& name);
 
+/*
+ * Deep Mode
+ * 深度模式专用
+ */
+
+void DeepMark(const std::string& name);
+
+void DeepCounter(const std::string& name, float value);
+
+void DeepPush(const std::string& name);
+
+void DeepPop(const std::string& name);
+
+/*
+ * 深度模式专用
+ */
+
 #else
 
 int EnableSendToPerfDog() { return 0; }
@@ -57,6 +74,22 @@ void setLabel(const std::string&) {}
 //Annotate and calibrate the current moment
 //对当前时刻进行批注及标定
 void addNote(const std::string&) {}
+
+/*
+ * Deep Mode
+ * 深度模式专用
+ */
+
+void DeepMark(const std::string& name);
+
+void DeepCounter(const std::string& name, float value);
+
+void DeepPush(const std::string& name);
+
+void DeepPop(const std::string& name);
+/*
+ * 深度模式专用
+ */
 
 #endif
 
