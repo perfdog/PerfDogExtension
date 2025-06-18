@@ -18,6 +18,9 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <stdint.h>
+#include <stdlib.h>
+#include <sstream>
 
 namespace perfdog {
 
@@ -106,6 +109,10 @@ enum MessageType : uint16_t {
   kCleanMap,  // 空 empty
   kSetLabelReq,
   kAddNoteReq,
+  kDeepMarkReq,
+  kDeepCounterReq,
+  kDeepPushReq,
+  kDeepPopReq,
 };
 
 class Buffer {
@@ -440,6 +447,76 @@ class AddNoteReq : public Message {
   std::string name_;
 };
 
+class DeepMessage : public Message {
+ public:
+  DeepMessage(uint64_t time, int threadId, StringOrId name)
+      : time_(time), thread_id_(threadId), name_(std::move(name)) {}
+
+  virtual MessageType Type() const override = 0;
+
+  void Serialize(Buffer& buffer) const override {
+    buffer.WriteUint64(time_);
+    buffer.WriteInt32(thread_id_);
+    name_.Serialize(buffer);
+  }
+
+  void Deserialize(Buffer& buffer) override {
+    time_ = buffer.ReadUint64();
+    thread_id_ = buffer.ReadInt32();
+    name_.Deserialize(buffer);
+  }
+
+ private:
+  uint64_t time_;
+  int thread_id_;
+  StringOrId name_;
+};
+
+class DeepMarkReq : public DeepMessage {
+ public:
+  DeepMarkReq(uint64_t time, int threadId, StringOrId name) : DeepMessage(time, threadId, std::move(name)) {}
+
+  MessageType Type() const override { return kDeepMarkReq; }
+};
+
+class DeepCounterReq : public Message {
+ public:
+  DeepCounterReq(uint64_t time, StringOrId name, float value) : time_(time), name_(std::move(name)), value_(value) {}
+
+  MessageType Type() const override { return kDeepCounterReq; }
+
+  void Serialize(Buffer& buffer) const override {
+    buffer.WriteUint64(time_);
+    name_.Serialize(buffer);
+    buffer.WriteFloat(value_);
+  }
+
+  void Deserialize(Buffer& buffer) override {
+    time_ = buffer.ReadUint64();
+    name_.Deserialize(buffer);
+    value_ = buffer.ReadFloat();
+  }
+
+ private:
+  uint64_t time_;
+  StringOrId name_;
+  float value_;
+};
+
+class DeepPushReq : public DeepMessage {
+ public:
+  DeepPushReq(uint64_t time, int threadId, StringOrId name) : DeepMessage(time, threadId, std::move(name)) {}
+
+  MessageType Type() const override { return kDeepPushReq; }
+};
+
+class DeepPopReq : public DeepMessage {
+ public:
+  DeepPopReq(uint64_t time, int threadId, StringOrId name) : DeepMessage(time, threadId, std::move(name)) {}
+
+  MessageType Type() const override { return kDeepPopReq; }
+};
+
 class EmptyMessageWrapper : public Message {
  public:
   EmptyMessageWrapper(MessageType type) : type_(type) {}
@@ -474,6 +551,8 @@ static BlockPtr AllocBlock() {
   block->capacity = kBlockSize - sizeof(Block);
   return {block, ReleaseBlock};
 }
+
+static void ErrorLog(const char* format, ...);
 
 class PerfDogExtension {
  public:
@@ -539,6 +618,34 @@ class PerfDogExtension {
     }
   }
 
+  void DeepMark(const std::string& name) {
+    if (IsStartTest()) {
+      DeepMarkReq message(CurrentTime(), CurrentThreadId(), StringToId(name));
+      WriteMessage(message);
+    }
+  }
+
+  void DeepCounter(const std::string& name, float value) {
+    if (IsStartTest()) {
+      DeepCounterReq message(CurrentTime(), StringToId(name), value);
+      WriteMessage(message);
+    }
+  }
+
+  void DeepPush(const std::string& name) {
+    if (IsStartTest()) {
+      DeepPushReq message(CurrentTime(), CurrentThreadId(), StringToId(name));
+      WriteMessage(message);
+    }
+  }
+
+  void DeepPop(const std::string& name) {
+    if (IsStartTest()) {
+      DeepPopReq message(CurrentTime(), CurrentThreadId(), StringToId(name));
+      WriteMessage(message);
+    }
+  }
+
   bool IsStartTest() { return start_test_; }
 
  protected:
@@ -564,8 +671,8 @@ class PerfDogExtension {
   virtual int StartServer() = 0;
   virtual void StopServer() = 0;
   virtual int SendData(const void* buf, int size) = 0;
-  virtual void ErrorLog(const char* format, ...) = 0;
   virtual uint64_t CurrentTime() = 0;  // 毫秒 ms
+  virtual int CurrentThreadId() = 0;
 
  private:
   void StartTest() {
@@ -578,6 +685,7 @@ class PerfDogExtension {
       writer_ = std::unique_ptr<std::thread>(new std::thread(&PerfDogExtension::DrainBuffer, this));
     }
     WriteMessage(EmptyMessageWrapper(kStartTestRsp));
+    ErrorLog("start test");
   }
 
   void StopTest() {
@@ -589,8 +697,8 @@ class PerfDogExtension {
       writer_->join();
       writer_ = nullptr;
       ClearData();
+      ErrorLog("stop test");
     }
-    WriteMessage(EmptyMessageWrapper(kStopTestRsp));
   }
 
   void ClearData() {
@@ -693,8 +801,8 @@ class PerfDogExtension {
 #include <sys/socket.h>
 #include <unistd.h>
 #elif defined(_WIN32)
-#include <windows.h>
 #include <winsock2.h>
+#include <windows.h>
 #define socklen_t int
 #endif
 
@@ -703,6 +811,14 @@ class PerfDogExtension {
 #else
 #define SOCKET_SEND_FLAG 0
 #endif
+
+#if defined(__ANDROID__) || defined(__APPLE__)
+#define CAUSE_BY_SIGNAL() (errno == EINTR)
+#else
+#define CAUSE_BY_SIGNAL() (false)
+#endif
+
+#define PRINT_ERROR(prefix) PrintError(__FILE__, __LINE__, prefix)
 
 namespace perfdog {
 template <typename T, int (*CloseFunction)(T), T InvalidValue>
@@ -751,7 +867,6 @@ using ScopeFile = ScopedResource<SOCKET, closesocket, INVALID_SOCKET>;
 #define SOCKET_PORT 53000
 #endif
 
-
 class PerfDogExtensionPosix : public PerfDogExtension {
  public:
   PerfDogExtensionPosix() : server_fd_(-1), stop_(false) {}
@@ -760,19 +875,19 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
  protected:
   int StartServer() override {
-    std::lock_guard<std::mutex> lock_guard(lock_);
+    std::lock_guard<std::mutex> lock_guard(server_lock_);
 
     if (server_) return 0;
 
     server_fd_ = ScopeFile(::socket(AF_INET, SOCK_STREAM, 0));
     if (server_fd_.Get() == -1) {
-      PrintError("socket");
+      PRINT_ERROR("socket");
       return 1;
     }
 
     int opt = 1;
     if (::setsockopt(server_fd_.Get(), SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt)) < 0) {
-      PrintError("setsockopt");
+      PRINT_ERROR("setsockopt");
       return 1;
     }
 
@@ -788,12 +903,12 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     local_addr.sin_family = AF_INET;
     local_addr.sin_port = htons(SOCKET_PORT);
     if (::bind(server_fd_.Get(), (sockaddr*)&local_addr, sizeof(local_addr)) == -1) {
-      PrintError("bind");
+      PRINT_ERROR("bind");
       return 1;
     }
 
     if (::listen(server_fd_.Get(), 1) == -1) {
-      PrintError("listen");
+      PRINT_ERROR("listen");
       return 1;
     }
 
@@ -803,7 +918,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
   }
 
   void StopServer() override {
-    std::lock_guard<std::mutex> lock_guard(lock_);
+    std::lock_guard<std::mutex> lock_guard(server_lock_);
 
     if (server_) {
       stop_ = true;
@@ -813,10 +928,10 @@ class PerfDogExtensionPosix : public PerfDogExtension {
   }
 
   int SendData(const void* buf, int size) override {
-    std::lock_guard<std::mutex> lock_guard(lock_);
+    std::lock_guard<std::mutex> lock_guard(client_fd_lock_);
 
     if (client_fd_.Get() != -1) {
-      int ret = ::send(client_fd_.Get(), (const char*)buf, size, SOCKET_SEND_FLAG);
+      int ret = CallSend(client_fd_.Get(), (const char*)buf, size, SOCKET_SEND_FLAG);
       if (ret != size) ErrorLog("send error:size %d,ret %d", size, ret);
       return ret;
     } else {
@@ -824,7 +939,51 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     }
   }
 
-  virtual void PrintError(const char* prefix) { ErrorLog("%s:%s", prefix, strerror(errno)); }
+  virtual void PrintError(const char* file, int line, const char* prefix) {
+    ErrorLog("%s:%d %s:%s", file, line, prefix, strerror(errno));
+  }
+
+  int CallRecv(int fd, char* buf, size_t n, int flags) {
+    while (true) {
+      int ret = ::recv(fd, buf, n, flags);
+      if (ret == -1) {
+        if (CAUSE_BY_SIGNAL()) {
+          continue;
+        }
+        PRINT_ERROR("recv");
+      }
+
+      return ret;
+    }
+  }
+
+  int CallSend(int fd, const char* buf, size_t n, int flags) {
+    while (true) {
+      int ret = ::send(fd, buf, n, flags);
+      if (ret == -1) {
+        if (CAUSE_BY_SIGNAL()) {
+          continue;
+        }
+        PRINT_ERROR("send");
+      }
+
+      return ret;
+    }
+  }
+
+  int CallAccept(int fd, struct sockaddr* addr, socklen_t* addr_length) {
+    while (true) {
+      int ret = ::accept(fd, addr, addr_length);
+      if (ret == -1) {
+        if (CAUSE_BY_SIGNAL()) {
+          continue;
+        }
+        PRINT_ERROR("accept");
+      }
+
+      return ret;
+    }
+  }
 
   // 0:timeout -1:error or EOF >0:Actual readings
   // 0:timeout -1:错误或者EOF >0:实际读到的数据
@@ -840,10 +999,13 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
     int ret = ::select(fd.Get() + 1, &rfds, NULL, NULL, &tv);
     if (ret == -1) {
-      PrintError("select");
+      if (CAUSE_BY_SIGNAL()) {
+        return 0;
+      }
+      PRINT_ERROR("select");
       return -1;
     } else if (ret) {
-      int nread = ::recv(fd.Get(), buf, count, 0);
+      int nread = CallRecv(fd.Get(), buf, count, 0);
       return nread > 0 ? nread : -1;
     } else
       return 0;
@@ -861,23 +1023,28 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
       int ret = ::select(server_fd_.Get() + 1, &rfds, NULL, NULL, &tv);
       if (ret == -1) {
-        PrintError("select");
+        if (CAUSE_BY_SIGNAL()) {
+          continue;
+        }
+        PRINT_ERROR("select");
         return;
       }
 
       if (ret > 0) {
         sockaddr_in peer_addr;
         socklen_t peer_addr_size = sizeof(peer_addr);
-        ScopeFile fd(::accept(server_fd_.Get(), (sockaddr*)&peer_addr, &peer_addr_size));
+        ScopeFile fd(CallAccept(server_fd_.Get(), (sockaddr*)&peer_addr, &peer_addr_size));
 
         {
-          std::lock_guard<std::mutex> lock_guard(lock_);
+          std::lock_guard<std::mutex> lock_guard(client_fd_lock_);
           client_fd_ = std::move(fd);
+          ErrorLog("client connected");
         }
         OnConnect();
         ReadData(client_fd_);
         {
-          std::lock_guard<std::mutex> lock_guard(lock_);
+          std::lock_guard<std::mutex> lock_guard(client_fd_lock_);
+          ErrorLog("client disconnect");
           client_fd_ = ScopeFile();
         }
         OnDisconnect();
@@ -967,10 +1134,11 @@ class PerfDogExtensionPosix : public PerfDogExtension {
   }
 
  private:
-  std::mutex lock_;
+  std::mutex server_lock_;
   std::unique_ptr<std::thread> server_;
   ScopeFile server_fd_;
   ScopeFile client_fd_;
+  std::mutex client_fd_lock_;
   std::atomic_bool stop_;
 };
 }  // namespace perfdog
@@ -984,6 +1152,13 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
 namespace perfdog {
 
+static void ErrorLog(const char* format, ...) {
+  va_list arglist;
+  va_start(arglist, format);
+  __android_log_vprint(ANDROID_LOG_ERROR, "PerfDogExtension", format, arglist);
+  va_end(arglist);
+}
+
 class PerfDogExtensionAndroid : public PerfDogExtensionPosix {
  protected:
   uint64_t CurrentTime() override {
@@ -996,12 +1171,7 @@ class PerfDogExtensionAndroid : public PerfDogExtensionPosix {
     return t.tv_sec * (uint64_t)1e3 + t.tv_nsec / 1000000;
   }
 
-  void ErrorLog(const char* format, ...) override {
-    va_list arglist;
-    va_start(arglist, format);
-    __android_log_vprint(ANDROID_LOG_ERROR, "PerfDogExtension", format, arglist);
-    va_end(arglist);
-  }
+  int CurrentThreadId() override { return gettid(); }
 };
 
 static PerfDogExtension& GetPerfDogExtensionInstance() {
@@ -1014,8 +1184,19 @@ static PerfDogExtension& GetPerfDogExtensionInstance() {
 #ifdef __APPLE__
 #include <Foundation/Foundation.h>
 #include <mach/mach_time.h>
+#include <pthread.h>
 
 namespace perfdog {
+
+static void ErrorLog(const char* format, ...) {
+  char output[256];
+  va_list vargs;
+  va_start(vargs, format);
+  vsnprintf(output, sizeof(output), format, vargs);
+  NSLog(@"PerfDogExtension: %s", output);
+  va_end(vargs);
+}
+
 class PerfDogExtensionIos : public PerfDogExtensionPosix {
  public:
   PerfDogExtensionIos() {
@@ -1030,14 +1211,7 @@ class PerfDogExtensionIos : public PerfDogExtensionPosix {
     return now / time_freq_;
   }
 
-  void ErrorLog(const char* format, ...) override {
-    char output[256];
-    va_list vargs;
-    va_start(vargs, format);
-    vsnprintf(output, sizeof(output), format, vargs);
-    NSLog(@"PerfDogExtension: %s", output);
-    va_end(vargs);
-  }
+  int CurrentThreadId() override { return (int)pthread_mach_thread_np(pthread_self()); }
 
  private:
   uint64_t time_freq_;
@@ -1051,8 +1225,20 @@ static PerfDogExtension& GetPerfDogExtensionInstance() {
 #endif
 
 #if defined(_WIN32) || defined(_GAMING_XBOX)
+#include <processthreadsapi.h>
 
 namespace perfdog {
+
+static void ErrorLog(const char* format, ...) {
+  char output[256];
+  va_list vargs;
+  va_start(vargs, format);
+  vsnprintf(output, sizeof(output), format, vargs);
+  puts(output);
+  OutputDebugStringA(output);
+  va_end(vargs);
+}
+
 class PerfDogExtensionWindow : public PerfDogExtensionPosix {
  public:
   PerfDogExtensionWindow() {
@@ -1060,7 +1246,7 @@ class PerfDogExtensionWindow : public PerfDogExtensionPosix {
 
     int ret = WSAStartup(MAKEWORD(2, 2), &wsa_data);
     if (ret != 0) {
-      PrintError("WSAStartup");
+      PRINT_ERROR("WSAStartup");
     }
 
     QueryPerformanceFrequency(&time_freq_);
@@ -1074,17 +1260,9 @@ class PerfDogExtensionWindow : public PerfDogExtensionPosix {
     return time.QuadPart * 1000 / time_freq_.QuadPart;
   }
 
-  void ErrorLog(const char* format, ...) override {
-    char output[256];
-    va_list vargs;
-    va_start(vargs, format);
-    vsnprintf(output, sizeof(output), format, vargs);
-    puts(output);
-    OutputDebugStringA(output);
-    va_end(vargs);
-  }
+  int CurrentThreadId() override { return GetCurrentThreadId(); }
 
-  void PrintError(const char* prefix) override {
+  void PrintError(const char* file, int line, const char* prefix) override {
     char* buf = NULL;
     const char* errmsg;
 
@@ -1096,7 +1274,7 @@ class PerfDogExtensionWindow : public PerfDogExtensionPosix {
     else
       errmsg = "Unknown error";
 
-    ErrorLog("%s:%s", prefix, errmsg);
+    ErrorLog("%s:%d %s:%s", file, line, prefix, errmsg);
     if (buf) LocalFree(buf);
   }
 
@@ -1144,6 +1322,14 @@ void PostValueS(const std::string& category, const std::string& key, const std::
 void setLabel(const std::string& name) { GetPerfDogExtensionInstance().setLabel(name); }
 
 void addNote(const std::string& name) { GetPerfDogExtensionInstance().addNote(name); }
+
+void DeepMark(const std::string& name) { GetPerfDogExtensionInstance().DeepMark(name); }
+
+void DeepCounter(const std::string& name, float value) { GetPerfDogExtensionInstance().DeepCounter(name, value); }
+
+void DeepPush(const std::string& name) { GetPerfDogExtensionInstance().DeepPush(name); }
+
+void DeepPop(const std::string& name) { GetPerfDogExtensionInstance().DeepPop(name); }
 
 }  // namespace perfdog
 
