@@ -556,7 +556,7 @@ static void ErrorLog(const char* format, ...);
 
 class PerfDogExtension {
  public:
-  PerfDogExtension() : stop_(false), start_test_(false) {}
+  PerfDogExtension() : stop_send_(false), start_test_(false) {}
 
   int Init() {
     std::lock_guard<std::mutex> lock_guard(lock_);
@@ -679,7 +679,7 @@ class PerfDogExtension {
     std::lock_guard<std::mutex> lock_guard(lock_);
 
     if (!writer_) {
-      stop_ = false;
+      stop_send_ = false;
       start_test_ = true;
       ClearData();
       writer_ = std::unique_ptr<std::thread>(new std::thread(&PerfDogExtension::DrainBuffer, this));
@@ -692,7 +692,7 @@ class PerfDogExtension {
     std::lock_guard<std::mutex> lock_guard(lock_);
 
     if (writer_) {
-      stop_ = true;
+      stop_send_ = true;
       start_test_ = false;
       writer_->join();
       writer_ = nullptr;
@@ -723,7 +723,7 @@ class PerfDogExtension {
   }
 
   void DrainBuffer() {
-    while (!stop_) {
+    while (!stop_send_) {
       std::forward_list<BlockPtr> commit_list;
 
       {
@@ -781,7 +781,7 @@ class PerfDogExtension {
   int initialize_result_ = 0;
   std::unique_ptr<std::thread> writer_;
   std::mutex lock_;
-  std::atomic_bool stop_;
+  std::atomic_bool stop_send_;
   std::atomic_bool start_test_;
   std::forward_list<BlockPtr> block_list_;  // 前插链表 prependant linked list
   std::mutex buffer_lock_;
@@ -816,6 +816,13 @@ class PerfDogExtension {
 #define CAUSE_BY_SIGNAL() (errno == EINTR)
 #else
 #define CAUSE_BY_SIGNAL() (false)
+#endif
+
+#if defined(_WIN32)
+#define poll(...) WSAPoll(__VA_ARGS__)
+#define POLL_FlAG POLLRDNORM
+#else
+#define POLL_FlAG POLLIN
 #endif
 
 #define PRINT_ERROR(prefix) PrintError(__FILE__, __LINE__, prefix)
@@ -869,7 +876,7 @@ using ScopeFile = ScopedResource<SOCKET, closesocket, INVALID_SOCKET>;
 
 class PerfDogExtensionPosix : public PerfDogExtension {
  public:
-  PerfDogExtensionPosix() : server_fd_(-1), stop_(false) {}
+  PerfDogExtensionPosix() : server_fd_(-1), stop_server_(false) {}
 
   ~PerfDogExtensionPosix() override { PerfDogExtensionPosix::StopServer(); }
 
@@ -912,7 +919,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
       return 1;
     }
 
-    stop_ = false;
+    stop_server_ = false;
     server_ = std::unique_ptr<std::thread>(new std::thread(&PerfDogExtensionPosix::ProcessClientMessage, this));
     return 0;
   }
@@ -921,7 +928,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     std::lock_guard<std::mutex> lock_guard(server_lock_);
 
     if (server_) {
-      stop_ = true;
+      stop_server_ = true;
       server_->join();
       server_ = nullptr;
     }
@@ -988,49 +995,56 @@ class PerfDogExtensionPosix : public PerfDogExtension {
   // 0:timeout -1:error or EOF >0:Actual readings
   // 0:timeout -1:错误或者EOF >0:实际读到的数据
   int ReadWithTimeout(const ScopeFile& fd, int timeout_ms, char* buf, int count) {
-    fd_set rfds;
-    timeval tv;
+    pollfd rfds;
 
-    FD_ZERO(&rfds);
-    FD_SET(fd.Get(), &rfds);
+    memset(&rfds, 0, sizeof(rfds));
+    rfds.fd = fd.Get();
+    rfds.events = POLL_FlAG;
 
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = timeout_ms % 1000 * 1000;
-
-    int ret = ::select(fd.Get() + 1, &rfds, NULL, NULL, &tv);
+    int ret = ::poll(&rfds, 1, timeout_ms);
     if (ret == -1) {
       if (CAUSE_BY_SIGNAL()) {
         return 0;
       }
-      PRINT_ERROR("select");
+      PRINT_ERROR("poll");
       return -1;
     } else if (ret) {
-      int nread = CallRecv(fd.Get(), buf, count, 0);
-      return nread > 0 ? nread : -1;
+      if (rfds.revents & POLL_FlAG) {
+        int nread = CallRecv(fd.Get(), buf, count, 0);
+        return nread > 0 ? nread : -1;
+      } else {
+        if ((rfds.revents & POLLHUP) == 0) {
+          ErrorLog("client fd poll revents: 0x%x", rfds.revents);
+        }
+        return -1;
+      }
     } else
       return 0;
   }
 
   void ProcessClientMessage() {
-    while (!stop_) {
-      fd_set rfds;
-      timeval tv;
+    while (!stop_server_) {
+      pollfd rfds;
 
-      FD_ZERO(&rfds);
-      FD_SET(server_fd_.Get(), &rfds);
-      tv.tv_sec = 0;
-      tv.tv_usec = 100 * 1000;
+      memset(&rfds, 0, sizeof(rfds));
+      rfds.fd = server_fd_.Get();
+      rfds.events = POLL_FlAG;
 
-      int ret = ::select(server_fd_.Get() + 1, &rfds, NULL, NULL, &tv);
+      int ret = ::poll(&rfds, 1, 100);
       if (ret == -1) {
         if (CAUSE_BY_SIGNAL()) {
           continue;
         }
-        PRINT_ERROR("select");
+        PRINT_ERROR("poll");
         return;
       }
 
       if (ret > 0) {
+        if ((rfds.revents & POLL_FlAG) == 0) {
+          ErrorLog("server_fd_ poll revents: 0x%x", rfds.revents);
+          return;
+        }
+
         sockaddr_in peer_addr;
         socklen_t peer_addr_size = sizeof(peer_addr);
         ScopeFile fd(CallAccept(server_fd_.Get(), (sockaddr*)&peer_addr, &peer_addr_size));
@@ -1056,7 +1070,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     std::string data;
     char temp[4096];
 
-    while (!stop_) {
+    while (!stop_server_) {
       int ret = ReadWithTimeout(fd, 100, temp, sizeof(temp));
       if (ret == -1) return;
 
@@ -1139,7 +1153,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
   ScopeFile server_fd_;
   ScopeFile client_fd_;
   std::mutex client_fd_lock_;
-  std::atomic_bool stop_;
+  std::atomic_bool stop_server_;
 };
 }  // namespace perfdog
 
