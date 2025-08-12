@@ -22,6 +22,10 @@
 #include <stdlib.h>
 #include <sstream>
 
+#ifdef _WIN32
+#pragma warning(default : 4018)
+#endif
+
 namespace perfdog {
 
 /**
@@ -553,6 +557,26 @@ static BlockPtr AllocBlock() {
 }
 
 static void ErrorLog(const char* format, ...);
+static void PrintError(const char* file, int line, const char* prefix);
+#define PRINT_ERROR(prefix) PrintError(__FILE__, __LINE__, prefix)
+
+class PlatformThread {
+ public:
+  PlatformThread(void (*func_ptr)(void*), void* arg) : func_ptr_(func_ptr), arg_(arg) {}
+
+  virtual ~PlatformThread() = default;
+
+  virtual void Join() = 0;
+
+ protected:
+  void Run() { func_ptr_(arg_); }
+
+ private:
+  void (*func_ptr_)(void*);
+  void* arg_;
+};
+
+PlatformThread* CreatePlatformThread(void (*func_ptr)(void*), void* arg);
 
 class PerfDogExtension {
  public:
@@ -682,7 +706,8 @@ class PerfDogExtension {
       stop_send_ = false;
       start_test_ = true;
       ClearData();
-      writer_ = std::unique_ptr<std::thread>(new std::thread(&PerfDogExtension::DrainBuffer, this));
+      writer_ = std::unique_ptr<PlatformThread>(
+          CreatePlatformThread([](void* arg) { reinterpret_cast<PerfDogExtension*>(arg)->DrainBuffer(); }, this));
     }
     WriteMessage(EmptyMessageWrapper(kStartTestRsp));
     ErrorLog("start test");
@@ -694,7 +719,7 @@ class PerfDogExtension {
     if (writer_) {
       stop_send_ = true;
       start_test_ = false;
-      writer_->join();
+      writer_->Join();
       writer_ = nullptr;
       ClearData();
       ErrorLog("stop test");
@@ -779,7 +804,7 @@ class PerfDogExtension {
  private:
   bool initialized_ = false;
   int initialize_result_ = 0;
-  std::unique_ptr<std::thread> writer_;
+  std::unique_ptr<PlatformThread> writer_;
   std::mutex lock_;
   std::atomic_bool stop_send_;
   std::atomic_bool start_test_;
@@ -824,8 +849,6 @@ class PerfDogExtension {
 #else
 #define POLL_FlAG POLLIN
 #endif
-
-#define PRINT_ERROR(prefix) PrintError(__FILE__, __LINE__, prefix)
 
 namespace perfdog {
 template <typename T, int (*CloseFunction)(T), T InvalidValue>
@@ -920,7 +943,8 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     }
 
     stop_server_ = false;
-    server_ = std::unique_ptr<std::thread>(new std::thread(&PerfDogExtensionPosix::ProcessClientMessage, this));
+    server_ = std::unique_ptr<PlatformThread>(CreatePlatformThread(
+        [](void* arg) { reinterpret_cast<PerfDogExtensionPosix*>(arg)->ProcessClientMessage(); }, this));
     return 0;
   }
 
@@ -929,7 +953,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
     if (server_) {
       stop_server_ = true;
-      server_->join();
+      server_->Join();
       server_ = nullptr;
     }
   }
@@ -944,10 +968,6 @@ class PerfDogExtensionPosix : public PerfDogExtension {
     } else {
       return 0;
     }
-  }
-
-  virtual void PrintError(const char* file, int line, const char* prefix) {
-    ErrorLog("%s:%d %s:%s", file, line, prefix, strerror(errno));
   }
 
   int CallRecv(int fd, char* buf, size_t n, int flags) {
@@ -1149,7 +1169,7 @@ class PerfDogExtensionPosix : public PerfDogExtension {
 
  private:
   std::mutex server_lock_;
-  std::unique_ptr<std::thread> server_;
+  std::unique_ptr<PlatformThread> server_;
   ScopeFile server_fd_;
   ScopeFile client_fd_;
   std::mutex client_fd_lock_;
@@ -1171,6 +1191,10 @@ static void ErrorLog(const char* format, ...) {
   va_start(arglist, format);
   __android_log_vprint(ANDROID_LOG_ERROR, "PerfDogExtension", format, arglist);
   va_end(arglist);
+}
+
+static void PrintError(const char* file, int line, const char* prefix) {
+  ErrorLog("%s:%d %s:%s", file, line, prefix, strerror(errno));
 }
 
 class PerfDogExtensionAndroid : public PerfDogExtensionPosix {
@@ -1209,6 +1233,10 @@ static void ErrorLog(const char* format, ...) {
   vsnprintf(output, sizeof(output), format, vargs);
   NSLog(@"PerfDogExtension: %s", output);
   va_end(vargs);
+}
+
+static void PrintError(const char* file, int line, const char* prefix) {
+  ErrorLog("%s:%d %s:%s", file, line, prefix, strerror(errno));
 }
 
 class PerfDogExtensionIos : public PerfDogExtensionPosix {
@@ -1253,6 +1281,22 @@ static void ErrorLog(const char* format, ...) {
   va_end(vargs);
 }
 
+static void PrintError(const char* file, int line, const char* prefix) {
+  char* buf = NULL;
+  const char* errmsg;
+
+  FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL,
+                 WSAGetLastError(), 0, (LPSTR)&buf, 0, NULL);
+
+  if (buf)
+    errmsg = buf;
+  else
+    errmsg = "Unknown error";
+
+  ErrorLog("%s:%d %s:%s", file, line, prefix, errmsg);
+  if (buf) LocalFree(buf);
+}
+
 class PerfDogExtensionWindow : public PerfDogExtensionPosix {
  public:
   PerfDogExtensionWindow() {
@@ -1276,22 +1320,6 @@ class PerfDogExtensionWindow : public PerfDogExtensionPosix {
 
   int CurrentThreadId() override { return GetCurrentThreadId(); }
 
-  void PrintError(const char* file, int line, const char* prefix) override {
-    char* buf = NULL;
-    const char* errmsg;
-
-    FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL,
-                   WSAGetLastError(), 0, (LPSTR)&buf, 0, NULL);
-
-    if (buf)
-      errmsg = buf;
-    else
-      errmsg = "Unknown error";
-
-    ErrorLog("%s:%d %s:%s", file, line, prefix, errmsg);
-    if (buf) LocalFree(buf);
-  }
-
  private:
   LARGE_INTEGER time_freq_;
 };
@@ -1301,6 +1329,98 @@ static PerfDogExtension& GetPerfDogExtensionInstance() {
   return instance;
 }
 }  // namespace perfdog
+#endif
+
+// thread implement
+#if defined(__ANDROID__) || defined(__APPLE__)
+
+#include <pthread.h>
+
+namespace perfdog {
+
+class PlatformThreadPThread : public PlatformThread {
+ public:
+  explicit PlatformThreadPThread(void (*func_ptr)(void*), void* arg)
+      : PlatformThread(func_ptr, arg), thread_id_(0), thread_started_(false), had_call_join_(false) {
+    pthread_t thread_id;
+    int ret = pthread_create(&thread_id, nullptr, &ThreadEntry, this);
+    if (ret) {
+      PRINT_ERROR("pthread_create");
+      return;
+    }
+    this->thread_id_ = thread_id;
+    this->thread_started_ = true;
+  }
+
+  ~PlatformThreadPThread() override { PlatformThreadPThread::Join(); }
+
+  void Join() override {
+    if (thread_started_ && !had_call_join_) {
+      had_call_join_ = true;
+      pthread_join(thread_id_, nullptr);
+    }
+  }
+
+ private:
+  static void* ThreadEntry(void* t) {
+    reinterpret_cast<PlatformThreadPThread*>(t)->Run();
+    return nullptr;
+  }
+
+  pthread_t thread_id_;
+  std::atomic_bool thread_started_;
+  std::atomic_bool had_call_join_;
+};
+
+PlatformThread* CreatePlatformThread(void (*func_ptr)(void*), void* arg) {
+  return new PlatformThreadPThread(func_ptr, arg);
+}
+
+}  // namespace perfdog
+
+#elif defined(_WIN32) || defined(_GAMING_XBOX)
+
+namespace perfdog {
+
+class PlatformThreadWin : public PlatformThread {
+ public:
+  PlatformThreadWin(void (*func_ptr)(void*), void* arg)
+      : PlatformThread(func_ptr, arg), handle_(nullptr), thread_started_(false), had_call_join_(false) {
+    handle_ = CreateThread(nullptr, 0, ThreadEntry, this, 0, nullptr);
+    if (handle_ == nullptr) {
+      PRINT_ERROR("CreateThread");
+      return;
+    }
+    thread_started_ = true;
+  }
+
+  ~PlatformThreadWin() override { PlatformThreadWin::Join(); }
+
+  void Join() override {
+    if (thread_started_ && !had_call_join_) {
+      had_call_join_ = true;
+      WaitForSingleObject(handle_, INFINITE);
+      CloseHandle(handle_);
+    }
+  }
+
+ private:
+  static DWORD ThreadEntry(void* t) {
+    reinterpret_cast<PlatformThreadWin*>(t)->Run();
+    return 0;
+  }
+
+  HANDLE handle_;
+  std::atomic_bool thread_started_;
+  std::atomic_bool had_call_join_;
+};
+
+PlatformThread* CreatePlatformThread(void (*func_ptr)(void*), void* arg) {
+  return new PlatformThreadWin(func_ptr, arg);
+}
+
+}  // namespace perfdog
+
 #endif
 
 //----------------------------------------------------------------
