@@ -38,58 +38,25 @@ void setLabel(const std::string& name);
 //对当前时刻进行批注及标定
 void addNote(const std::string& name);
 
-/*
- * Deep Mode
- * 深度模式专用
- */
-
-void DeepMark(const std::string& name);
-
-void DeepCounter(const std::string& name, float value);
-
-void DeepPush(const std::string& name);
-
-void DeepPop(const std::string& name);
-
-/*
- * 深度模式专用
- */
-
 #else
 
-int EnableSendToPerfDog() { return 0; }
+inline int EnableSendToPerfDog() { return 0; }
 
-void PostValueF(const std::string&, const std::string&, float) {}
-void PostValueF(const std::string&, const std::string&, float, float) {}
-void PostValueF(const std::string&, const std::string&, float, float, float) {}
-void PostValueI(const std::string&, const std::string&, int) {}
-void PostValueI(const std::string&, const std::string&, int, int) {}
-void PostValueI(const std::string&, const std::string&, int, int, int) {}
-void PostValueS(const std::string&, const std::string&, const std::string&) {}
+inline void PostValueF(const std::string&, const std::string&, float) {}
+inline void PostValueF(const std::string&, const std::string&, float, float) {}
+inline void PostValueF(const std::string&, const std::string&, float, float, float) {}
+inline void PostValueI(const std::string&, const std::string&, int) {}
+inline void PostValueI(const std::string&, const std::string&, int, int) {}
+inline void PostValueI(const std::string&, const std::string&, int, int, int) {}
+inline void PostValueS(const std::string&, const std::string&, const std::string&) {}
 
 //Marks the entry of a new scene, which will continue until the next setLabel.
 //标记进入一个新场景,这个场景会持续到下次setLabel
-void setLabel(const std::string&) {}
+inline void setLabel(const std::string&) {}
 
 //Annotate and calibrate the current moment
 //对当前时刻进行批注及标定
-void addNote(const std::string&) {}
-
-/*
- * Deep Mode
- * 深度模式专用
- */
-
-void DeepMark(const std::string& name);
-
-void DeepCounter(const std::string& name, float value);
-
-void DeepPush(const std::string& name);
-
-void DeepPop(const std::string& name);
-/*
- * 深度模式专用
- */
+inline void addNote(const std::string&) {}
 
 #endif
 
