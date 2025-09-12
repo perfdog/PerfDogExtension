@@ -77,6 +77,8 @@ note: when the client receives the data, it will put all the data with the same 
 
 Comment out the code in the box below in perfdog_extension.h
 
+![](https://github.com/perfdog/PerfDogExtension/raw/master/img/img3.png)
+
 ## Known issues
 
 Can't get custom data from ios phone on mac in wifi mode

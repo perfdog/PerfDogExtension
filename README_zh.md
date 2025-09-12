@@ -78,6 +78,8 @@ note:客户端收到数据后会将所有category相同的数据放到一个表�
 
 在perfdog_extension.h里注释下图框里的代码
 
+![](https://github.com/perfdog/PerfDogExtension/raw/master/img/img3.png)
+
 ## 已知问题
 
 在mac上ios手机在wifi模式下无法获取自定义数据
