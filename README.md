@@ -12,6 +12,7 @@ In order to test and analyze performance problems more conveniently and accurate
 - Windows
 - PlayStation
 - Xbox
+- Harmony
 
 ## Access to PerfDogExtension
 

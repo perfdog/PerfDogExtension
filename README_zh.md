@@ -12,6 +12,7 @@
 - Windows
 - PlayStation
 - Xbox
+- Harmony
 
 ## 接入PerfDogExtension
 
