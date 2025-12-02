@@ -3,7 +3,7 @@
 // Author: PerfDog@tencent.com
 // Version: 1.3
 
-#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32) || defined(_GAMING_XBOX)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32) || defined(_GAMING_XBOX) || defined(__OHOS__)
 
 #include "perfdog_extension.h"
 
@@ -820,7 +820,7 @@ class PerfDogExtension {
 // network transmission and reception
 // 网络收发
 //----------------------------------------------------------------
-#if defined(__ANDROID__) || defined(__APPLE__)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(__OHOS__)
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -831,13 +831,13 @@ class PerfDogExtension {
 #define socklen_t int
 #endif
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__OHOS__)
 #define SOCKET_SEND_FLAG MSG_NOSIGNAL
 #else
 #define SOCKET_SEND_FLAG 0
 #endif
 
-#if defined(__ANDROID__) || defined(__APPLE__)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(__OHOS__)
 #define CAUSE_BY_SIGNAL() (errno == EINTR)
 #else
 #define CAUSE_BY_SIGNAL() (false)
@@ -885,7 +885,7 @@ class ScopedResource {
   T fd_;
 };
 
-#if defined(__ANDROID__) || defined(__APPLE__)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(__OHOS__)
 using ScopeFile = ScopedResource<int, close, -1>;
 #elif defined(_WIN32)
 using ScopeFile = ScopedResource<SOCKET, closesocket, INVALID_SOCKET>;
@@ -1219,6 +1219,44 @@ static PerfDogExtension& GetPerfDogExtensionInstance() {
 }  // namespace perfdog
 #endif
 
+#ifdef __OHOS__
+#include <sys/time.h>
+#include <hilog/log.h>
+
+namespace perfdog {
+
+static void ErrorLog(const char* format, ...) {
+  va_list arglist;
+  va_start(arglist, format);
+  char buf[4096];
+  vsnprintf(buf, sizeof(buf), format, arglist);
+  va_end(arglist);
+  OH_LOG_Print(LOG_APP, LOG_ERROR, 0, "PerfDogExtension", "%{public}s", buf);
+}
+
+static void PrintError(const char* file, int line, const char* prefix) {
+  ErrorLog("%s:%d %s:%s", file, line, prefix, strerror(errno));
+}
+
+class PerfDogExtensionOhos : public PerfDogExtensionPosix {
+ protected:
+  uint64_t CurrentTime() override {
+    timeval t;
+    gettimeofday(&t, NULL);
+
+    return (uint64_t)t.tv_sec * 1000 + t.tv_usec / 1000;
+  }
+
+  int CurrentThreadId() override { return gettid(); }
+};
+
+static PerfDogExtension& GetPerfDogExtensionInstance() {
+  static PerfDogExtensionOhos instance;
+  return instance;
+}
+}  // namespace perfdog
+#endif
+
 #ifdef __APPLE__
 #include <Foundation/Foundation.h>
 #include <mach/mach_time.h>
@@ -1231,7 +1269,7 @@ static void ErrorLog(const char* format, ...) {
   va_list vargs;
   va_start(vargs, format);
   vsnprintf(output, sizeof(output), format, vargs);
-  NSLog(@"PerfDogExtension: %s", output);
+  NSLog(@ "PerfDogExtension: %s", output);
   va_end(vargs);
 }
 
@@ -1332,7 +1370,7 @@ static PerfDogExtension& GetPerfDogExtensionInstance() {
 #endif
 
 // thread implement
-#if defined(__ANDROID__) || defined(__APPLE__)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(__OHOS__)
 
 #include <pthread.h>
 
